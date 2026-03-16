@@ -98,3 +98,41 @@
 - Restore reliable host camera access so runtime motion can be optically verified again.
 - Re-run milestone 2 with the camera once the host-side video stack is stable.
 - Then add the second axis using the same architecture instead of returning to the external `DIAG` problem first.
+
+### Milestone 2 Optical Follow-Up
+- The camera path recovered later the same day and `vision_observer.py` completed successfully again.
+- I added a dedicated smooth-ramp workflow:
+  - `hil/scenarios/smooth_position_ramp.csv`
+  - `hil/verify_smooth_dmx_ramp.py`
+  - `run_smooth_ramp_check.sh`
+- The Pico runtime was kept quiet by default and made easier to debug explicitly with:
+  - `firmware/config.py: DEBUG_LOGGING`
+  - `./run_firmware.sh --debug`
+- The motion loop needed one practical runtime tuning change:
+  - reduce the chunk size to `10` steps
+  - reduce the runtime control sleep to `2 ms`
+- The host-side vision path also needed calibration for this Pi camera rig:
+  - use `640x480` capture
+  - lower contour `MIN_AREA` to `150`
+  - keep the smooth-ramp verifier thresholds realistic for the observed camera cadence
+
+### Smooth Ramp Result
+- The one-axis smooth-ramp run now passes optically.
+- Passing artifacts:
+  - `hil/captures/smooth_ramp_homing_result_20260316_214659.json`
+  - `hil/captures/smooth_ramp_runtime_status_20260316_214659.json`
+  - `hil/captures/vision_smooth_ramp_20260316_214659.csv`
+  - `hil/captures/dmx_smooth_ramp_20260316_214659.csv`
+  - `hil/captures/smooth_ramp_summary_20260316_214659.json`
+- Passing summary:
+  - runtime active `true`
+  - received DMX frames `917`
+  - visible travel span `242.0 deg`
+  - segment 1 monotonic ratio `1.0`, max step `6.4 deg`
+  - segment 2 monotonic ratio `1.0`, max step `28.7 deg`
+  - segment 3 monotonic ratio `0.7553`, max step `16.5 deg`
+
+### Updated Conclusion
+- Milestone 2 is now complete both functionally and optically.
+- The smooth-ramp workflow is the correct regression check before further runtime changes.
+- The next engineering step is second-axis bring-up, not more one-axis firmware refactoring.

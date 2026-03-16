@@ -1,69 +1,59 @@
 # Next Steps
 
 ## Where We Are Now
-- PIO-based step generation is implemented and is still the correct architecture.
-- TMC2209 UART control is working and remains required for:
-  - microstep selection
-  - motor current configuration
-  - driver enable/disable, because `EN` is soldered to `GND`
-- The current homing/debug firmware can exercise `STEP=GP2` and `DIR=GP3` and also try the swapped pair.
-- The OpenCV pipeline is already good enough to reject false homing passes.
-- The key new finding is negative:
-  - the recent `DIAG`-based "successes" were not real end-stop detections
-  - the external `DIAG` path has not been validated on `GP8..GP13`
-  - we should not block progress on external `DIAG`
+- Startup homing with `PIO` steps and `UART StallGuard` is working.
+- The firmware moves to center after homing.
+- One-axis DMX runtime is working and can keep up with `44 fps`.
+- The active runtime is now silent by default on the RP2040.
+- One-axis smooth-ramp runtime motion has now passed optical verification.
+- A smooth-ramp verification workflow exists:
+  - [hil/scenarios/smooth_position_ramp.csv](hil/scenarios/smooth_position_ramp.csv)
+  - [hil/verify_smooth_dmx_ramp.py](hil/verify_smooth_dmx_ramp.py)
+  - [run_smooth_ramp_check.sh](run_smooth_ramp_check.sh)
+- The smooth-ramp baseline is now calibrated for the current Pi camera rig.
 
-## New Immediate Milestone
-- Achieve one **optically verified UART-only homing and centering pass** on the RP2040 using:
-  - PIO-generated steps
-  - UART StallGuard detection
-  - `STEP=GP2` / `DIR=GP3` first, with the swapped fallback if needed
+## Immediate Task List
 
-## Success Criteria For This Milestone
-- The Pico boots and configures the TMC2209 over UART.
-- The motor performs a real homing search with PIO-generated steps.
-- The OpenCV trace shows total mechanism travel greater than `270 deg`.
-- The firmware moves the motor to the mechanical midpoint after homing.
-- The final centered position settles cleanly and repeatably.
-- No small-travel false trigger is accepted as success.
+### Task 1: Keep The One-Axis Ramp As The Baseline
+- Use:
+  - `./run_smooth_ramp_check.sh --upload`
+- Expect:
+  - a valid vision CSV
+  - a valid stimulus CSV
+  - a valid runtime status JSON
+  - a passing smoothness summary
+- Treat this as the regression check before changing runtime behavior again.
 
-## What This Means In Practice
-- External `DIAG` is now a debug aid, not the primary stop source.
-- The MVP path is to trust UART StallGuard first and prove it with optical data.
-- Any firmware path that claims success without full observed travel is wrong by definition.
+### Task 2: Bring Up The Second Axis
+- Add the second axis on the same `PIO` + `UART` architecture.
+- Keep the one-axis path working while adding the second step generator.
+- Re-run functional runtime checks under continuous `44 fps` DMX load.
+
+### Task 3: Extend Optical Validation To Two Axes
+- Add a dual-axis DMX scenario.
+- Extend the vision scoring to validate both traces in the same run.
+- Confirm that adding the second axis does not introduce timing instability or obvious motion artifacts.
+
+## Next Milestone
+- Achieve one **optically verified smooth dual-axis DMX ramp run** with:
+  - both axes active
+  - valid OpenCV capture
+  - no major backtracking on either trace
+  - no large CV jumps on either trace
+  - stable `44 fps` DMX reception throughout the run
 
 ## Milestones After That
 
-### Milestone 2: One-Axis DMX Runtime
-- Reintroduce DMX control for one motor on top of the verified homing path.
-- Validate stable operation under continuous `44 fps` incoming DMX.
-- Start with coarse motion and large setpoint changes that the OpenCV pipeline can verify.
-
-### Milestone 3: Two-Axis DMX Runtime
-- Bring up both motors together with the same PIO/UART architecture.
-- Confirm that DMX reception, target updates, and both PIO step generators remain stable under load.
-
 ### Milestone 4: MVP Soak
-- Run longer tests with repeated DMX changes, startup cycles, and DMX loss handling.
-- Confirm there are no hidden timing regressions or resource issues on the RP2040.
+- Run longer startup/runtime cycles.
+- Verify DMX loss handling and jam behavior.
 
-### Milestone 5: Optional External DIAG
-- Return to the hardware `DIAG` question only after the MVP path is stable.
-- If needed later, verify the real pin, polarity, and pull configuration with a dedicated probe.
-
-## Recommended Next Engineering Step
-1. Remove the remaining dependency on external `DIAG` for declaring homing success.
-2. Tune UART StallGuard thresholds and homing speed until one full-travel centered homing run passes optically.
-3. Once that is stable, merge the homing path back into the one-axis DMX control firmware.
-
-## Things We Should Stop Doing
-- Stop treating internal `IOIN.DIAG` toggles as proof of a valid external `DIAG` signal.
-- Stop accepting short travel spans as homing success.
-- Stop delaying DMX integration while waiting for the external `DIAG` wiring problem to be solved.
+## What We Should Not Do Right Now
+- Do not return to external `DIAG` work yet.
+- Do not treat functional DMX logs alone as proof of smooth motion.
+- Do not spend more time on firmware-side print debugging unless a specific bring-up issue requires it.
 
 ## Summary
-- The project should now aim for a `UART-only` homing MVP.
-- PIO step generation stays mandatory.
-- External `DIAG` is optional and can be solved later.
-- The next real proof point is not another DIAG scan.
-- The next real proof point is one repeatable, full-travel, optically verified homing-and-centering pass.
+- The Pico-side architecture is in the right place.
+- The one-axis optical runtime proof point now exists.
+- The next real proof point is dual-axis motion under the same validation discipline.

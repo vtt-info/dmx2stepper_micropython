@@ -5,7 +5,7 @@ from pathlib import Path
 
 CAPTURE_DIR = Path(__file__).resolve().parent / "captures"
 
-RESOLUTION = (1296, 972)
+RESOLUTION = (640, 480)
 ROTATE_180 = True
 
 # Camera controls are optional. Keep them as None unless tuned on the target Pi.
@@ -18,7 +18,7 @@ SATURATION = 100
 LIGHTNESS = 50
 TOLERANCE = 10
 
-MIN_AREA = 500
+MIN_AREA = 150
 APPROX_EPSILON = 0.02
 MORPH_KERNEL_SIZE = 5
 

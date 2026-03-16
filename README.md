@@ -10,7 +10,7 @@ RP2040-based DMX-to-stepper controller firmware with PIO DMX input, PIO step gen
 - Single-axis startup homing is working with UART StallGuard and has been optically verified.
 - After homing, the active firmware moves to center and enters one-axis DMX runtime.
 - One-axis runtime at 44 FPS DMX input has been validated functionally.
-- Runtime optical verification is currently blocked by an unstable host camera stack.
+- One-axis smooth-ramp runtime motion has now passed optical verification with the current HIL workflow.
 - External `DIAG` is not part of the current MVP path.
 
 ## MVP Direction
@@ -18,7 +18,7 @@ RP2040-based DMX-to-stepper controller firmware with PIO DMX input, PIO step gen
 The current MVP path is:
 
 1. Reliable startup homing with PIO steps and UART StallGuard.
-2. Stable one-axis DMX runtime.
+2. Optically verified one-axis DMX runtime.
 3. Second-axis bring-up with the same architecture.
 4. Dual-axis validation under sustained 44 FPS DMX input.
 
@@ -55,15 +55,36 @@ Run without re-uploading:
 ./run_firmware.sh
 ```
 
+Run with RP2040 debug prints enabled:
+
+```bash
+./run_firmware.sh --debug
+```
+
 Direct deploy only:
 
 ```bash
 bash firmware/deploy.sh /dev/ttyACM0
 ```
 
+## Smooth Ramp Verification
+
+Run a long eased DMX position-ramp and score the OpenCV trace for monotonicity, backtracking, and frame-to-frame jumps:
+
+```bash
+./run_smooth_ramp_check.sh --upload
+```
+
+The default workflow uses [hil/scenarios/smooth_position_ramp.csv](hil/scenarios/smooth_position_ramp.csv) and writes:
+
+- a DMX stimulus log
+- a vision CSV
+- a copied Pico homing result
+- a copied Pico runtime status
+- a summary JSON with smoothness metrics
+
 ## Next Steps
 
-- Restore reliable optical verification for runtime motion.
 - Bring up the second axis with the same PIO + UART architecture.
 - Validate dual-axis runtime under sustained DMX load.
 - Add soak and fault-handling validation for MVP.

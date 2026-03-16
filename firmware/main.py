@@ -67,6 +67,11 @@ def derive_uart_threshold(startup_sg_values):
     return clamp(threshold, config.HOME_UART_THRESHOLD_MIN, config.HOME_UART_THRESHOLD_MAX)
 
 
+def debug_log(message):
+    if bool(config.DEBUG_LOGGING):
+        print(message)
+
+
 class SharedDMXState:
     """State shared between the DMX reader thread and the motion loop."""
 
@@ -336,7 +341,7 @@ def seek_endstop_uart(driver, axis, direction, speed_hz, label):
                 status["startup_sg_values"].append(sg)
                 if status["startup_sg_samples"] == config.HOME_STARTUP_SG_SAMPLES:
                     status["uart_threshold"] = int(derive_uart_threshold(status["startup_sg_values"]))
-                    print(
+                    debug_log(
                         "[seek:{}] armed uart threshold {} from startup median {}".format(
                             label,
                             status["uart_threshold"],
@@ -356,7 +361,7 @@ def seek_endstop_uart(driver, axis, direction, speed_hz, label):
                     return "uart_stall"
 
         if elapsed_ms - last_status_ms >= config.PRINT_INTERVAL_MS:
-            print(
+            debug_log(
                 "[seek:{}] elapsed={}ms steps={} sg={} low_hits={} thr={}".format(
                     label,
                     elapsed_ms,
@@ -384,7 +389,7 @@ def seek_endstop_uart(driver, axis, direction, speed_hz, label):
     status["stop_reason"] = search["stop_reason"]
     status["success"] = search["stop_reason"] == "uart_stall"
 
-    print(
+    debug_log(
         "[seek:{}] result success={} stop_reason={} steps={} elapsed={}ms".format(
             label,
             int(status["success"]),
@@ -419,7 +424,7 @@ def run_centering_trial(driver, step_pin, dir_pin, axis_slot, home_direction, sp
         "success": False,
     }
 
-    print(
+    debug_log(
         "[trial] index={} slot={} step=GP{} dir=GP{} home_dir={} speed={}Hz".format(
             trial_index,
             axis_slot,
@@ -440,7 +445,7 @@ def run_centering_trial(driver, step_pin, dir_pin, axis_slot, home_direction, sp
                     poll_ms=config.HOME_POLL_MS,
                 )
             )
-            print("[trial] retract completed steps={}".format(status["retract_steps"]))
+            debug_log("[trial] retract completed steps={}".format(status["retract_steps"]))
             time.sleep_ms(config.HOME_SETTLE_MS)
 
         first_end = seek_endstop_uart(driver, axis, home_direction, speed_hz, "first_end")
@@ -458,7 +463,7 @@ def run_centering_trial(driver, step_pin, dir_pin, axis_slot, home_direction, sp
                     poll_ms=config.HOME_POLL_MS,
                 )
             )
-            print("[trial] release completed steps={}".format(status["release_steps"]))
+            debug_log("[trial] release completed steps={}".format(status["release_steps"]))
             time.sleep_ms(config.HOME_SETTLE_MS)
 
         second_end = seek_endstop_uart(driver, axis, -home_direction, speed_hz, "second_end")
@@ -470,7 +475,7 @@ def run_centering_trial(driver, step_pin, dir_pin, axis_slot, home_direction, sp
         status["travel_steps"] = int(status["release_steps"] + second_end["search_steps"])
         if status["travel_steps"] < int(config.HOME_MIN_TRAVEL_STEPS):
             status["stop_reason"] = "measured_span_too_small"
-            print(
+            debug_log(
                 "[trial] rejecting span={} steps because it is below minimum {}".format(
                     status["travel_steps"],
                     config.HOME_MIN_TRAVEL_STEPS,
@@ -492,7 +497,7 @@ def run_centering_trial(driver, step_pin, dir_pin, axis_slot, home_direction, sp
         status["stop_reason"] = "uart_centered" if status["success"] else "center_move_incomplete"
         time.sleep_ms(config.HOME_SETTLE_MS)
 
-        print(
+        debug_log(
             "[trial] travel={} center_requested={} center_moved={} success={}".format(
                 status["travel_steps"],
                 status["center_steps_requested"],
@@ -578,10 +583,10 @@ def main():
     runtime_axis = None
     controller = None
 
-    print("=" * 72)
-    print("UART HOMING + ONE-AXIS DMX RUNTIME")
-    print("board={}".format(result["board"]))
-    print(
+    debug_log("=" * 72)
+    debug_log("UART HOMING + ONE-AXIS DMX RUNTIME")
+    debug_log("board={}".format(result["board"]))
+    debug_log(
         "uart0 tx=GP{} rx=GP{} dmx=GP{} sm={} microsteps={} run={} hold={} en=UART-only".format(
             config.UART_TX_PIN,
             config.UART_RX_PIN,
@@ -592,14 +597,14 @@ def main():
             config.DEFAULT_HOLD_CURRENT,
         )
     )
-    print("=" * 72)
+    debug_log("=" * 72)
 
     try:
         if not configure_driver(driver):
             result["status"] = "done"
             result["stop_reason"] = "driver_init_failed"
             write_json(config.RESULT_FILE, result)
-            print("[error] TMC2209 initialization or UART enable failed")
+            debug_log("[error] TMC2209 initialization or UART enable failed")
             driver.set_driver_enabled_via_uart(False, fallback_toff=config.DRIVER_ENABLE_TOFF)
             return
 
@@ -609,14 +614,14 @@ def main():
             result["stop_reason"] = "all_trials_failed"
             write_json(config.RESULT_FILE, result)
             driver.set_driver_enabled_via_uart(False, fallback_toff=config.DRIVER_ENABLE_TOFF)
-            print("[result] homing failed on all trials")
+            debug_log("[result] homing failed on all trials")
             return
 
         result["runtime_ready"] = True
         write_json(config.RESULT_FILE, result)
 
         if not config.RUN_RUNTIME_AFTER_HOMING:
-            print("[result] homing complete; runtime disabled by configuration")
+            debug_log("[result] homing complete; runtime disabled by configuration")
             return
 
         runtime_axis = build_axis(
@@ -635,7 +640,7 @@ def main():
         last_currents = None
         runtime_start_ms = time.ticks_ms()
 
-        print(
+        debug_log(
             "[runtime] selected_trial={} step=GP{} dir=GP{} home_dir={} travel_steps={}".format(
                 result["selected_trial"],
                 homing_trial["step_pin"],
@@ -703,7 +708,7 @@ def main():
                 last_status_ms = now_ms
 
             if time.ticks_diff(now_ms, last_print_ms) >= config.PRINT_INTERVAL_MS:
-                print(
+                debug_log(
                     "[runtime] frames={} signal={} en={} pos={}/{} speed={:.1f} moved={}".format(
                         snapshot["frame_count"],
                         int(snapshot["signal_present"]),
@@ -720,7 +725,7 @@ def main():
                 int(config.RUNTIME_EXIT_AFTER_MS) > 0
                 and time.ticks_diff(now_ms, runtime_start_ms) >= int(config.RUNTIME_EXIT_AFTER_MS)
             ):
-                print("[runtime] exiting after configured runtime window")
+                debug_log("[runtime] exiting after configured runtime window")
                 return
 
             time.sleep_ms(config.RUNTIME_CONTROL_SLEEP_MS)

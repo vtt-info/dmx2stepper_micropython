@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import os
 import statistics
 import sys
 import time
@@ -178,6 +179,7 @@ def main() -> int:
 
     csv_file = None
     picam2 = None
+    camera_started = False
     frame_index = 0
     status_start = time.monotonic()
     status_frames = 0
@@ -185,6 +187,7 @@ def main() -> int:
 
     try:
         picam2 = configure_camera(Picamera2)
+        camera_started = True
         csv_file = output_path.open("w", newline="")
         writer = csv.DictWriter(
             csv_file,
@@ -244,15 +247,26 @@ def main() -> int:
 
     except KeyboardInterrupt:
         print("[INFO] Vision capture interrupted")
+        return_code = 130
+    except Exception as exc:
+        print(f"[ERROR] Vision capture failed: {exc}", file=sys.stderr)
+        sys.stderr.flush()
+        sys.stdout.flush()
+        if not camera_started:
+            os._exit(1)
+        return_code = 1
+    else:
+        return_code = 0
     finally:
-        if picam2 is not None:
+        if picam2 is not None and camera_started:
             picam2.stop()
         if csv_file is not None:
             csv_file.flush()
             csv_file.close()
 
-    print(f"[INFO] Vision capture written to {output_path}")
-    return 0
+    if return_code == 0:
+        print(f"[INFO] Vision capture written to {output_path}")
+    return return_code
 
 
 if __name__ == "__main__":
