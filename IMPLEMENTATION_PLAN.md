@@ -3,7 +3,7 @@
 ## Current Status
 - The repo layout is stable:
   - `firmware/` for active Pico code
-  - `hil/` for host-side DMX and vision validation
+  - `hil/` for host-side vision validation
   - `puzzle_pieces/` for historical references
 - RP2040 DMX reception on `GP29` is proven with PIO.
 - PIO step generation is implemented in the active firmware.
@@ -22,29 +22,24 @@
   - channels `1..2` = 16-bit position target
   - channels `3..6` = run current, hold current, max speed, acceleration
   - channel `7` = enable
+  - channel 8 = 255 triggeres a reset of the rp2040 to recalibrate
   - values `0..9` preserving firmware defaults for channels `3..7`
   - values `10..255` activating the configured runtime ranges
-- A smooth-ramp verification workflow now exists:
-  - DMX scenario generation
-  - OpenCV capture
-  - trace smoothness scoring
-- One-axis smooth-ramp runtime motion has now passed optical verification.
+- The only CV system is the live opencv_streamer serving MJPEG on port 8080 and TCP X coordinates on port 9999.
+- All DMX input comes exclusively from the lighting desk — no OLA, no scripted scenarios.
 - The active runtime no longer measures its usable span on startup.
 - The active one-axis startup flow is now:
   - seek one end with `UART StallGuard`
   - back off that end
-  - move to center inside a fixed logical travel window
 - The current fixed logical travel window is `20000` microsteps with a `1000` step soft-end margin, so full-scale DMX currently maps into `1000..19000`.
 - Recent live-DMX tuning confirmed a new limitation:
   - startup homing remains smooth
-  - live DMX motion is still visibly jittery and can hit soft limits or mis-track under aggressive changes
-- The earlier optical smooth-ramp pass is therefore a proof point for an older tuning state, not the current production baseline.
+  - live DMX motion is still visibly jittery
 
 ## MVP Goal
 Ship a reliable first firmware that can:
-- boot cleanly
-- home reliably at startup
-- move to center after homing
+- boot cleanly DONE
+- home reliably at startup DONE
 - receive DMX at `44 fps`
 - drive both motors with PIO-generated steps
 - behave predictably on DMX loss
@@ -73,8 +68,6 @@ For MVP, homing and runtime fault handling should be based on `UART StallGuard`,
   - PIO step generation
   - UART StallGuard detection
   - UART-only enable/disable
-- Implemented automatic move-to-center after homing.
-- Verified optically with full travel.
 
 ### Milestone 2: One-Axis DMX Runtime
 - Reintroduced one-axis DMX runtime on top of the verified homing result.
@@ -84,25 +77,20 @@ For MVP, homing and runtime fault handling should be based on `UART StallGuard`,
   - channel 2 = position LSB
 
 ## Current Validation State
-- Homing-and-centering has optical proof.
+- Homing has optical proof.
 - One-axis runtime has functional proof.
 - One-axis smooth runtime motion has one historical optical proof point, but the current fixed-span runtime still needs a fresh optical proof after the latest motion changes.
 - The highest-priority open issue is visible jitter under live DMX updates even when homing remains mechanically smooth.
-- The exact `~2 s` full-span target is now secondary to getting commercially acceptable motion quality on one axis first.
+- **Root cause identified and fixed (2026-03-19):** DMX signal is confirmed clean. The jitter came from two PIO-level bugs:
+  1. **PIO step overshoot:** The free-running PIO emitted extra pulses between the last counter poll and `stop()`. At 30kHz with 64-step chunks (~2ms per chunk, 2 polls), overshoot was up to 50%.
+  2. **Ghost edge counting:** The counter SM ran continuously and counted false rising edges on the step pin during idle.
+- **Fix deployed:** Count-limited PIO (`step_count_pio`) that generates exactly N pulses then idles, plus `Pin.PULL_DOWN` on the step pin.
+- **Result:** Hold jitter reduced from 25-46px to 4-18px (right position) and 1-16px (left position). Position zero holds are at camera measurement floor.
+- Remaining right-side instability is NOT mechanical (DMX MSB at 25 of 255, so far away from the end stop).
 
-## New Immediate Milestone: Commercial-Grade One-Axis Motion
-- Before bringing up the second axis, make one-axis live DMX motion look and feel closer to a commercial moving head.
-- Add a new mixed-motion DMX stimulus that includes:
-  - linear ramps at multiple speeds
-  - discrete jumps between positions
-  - a slow sine wave with increasing amplitude
-- Drive scoring from the output of the continuously running `vision_observer.py` process so the same long-lived video path is used for both manual watching and automated analysis.
-- Working assumptions from fixture and motor-control references:
-  - keep `16-bit` pan/tilt style targeting
-  - add fixture-side filtering / deadband so small DMX changes do not create visible chatter
-  - support a vector-style internal move profile rather than simply tracking every tiny DMX update
-  - consider selectable motion curves such as `linear` vs `S-curve`
-  - treat encoder-assisted correction or other closed-loop feedback as future work if open-loop smoothness stalls out
+## Current Immediate Milestone: Verify Stability And Bring Up Second Axis
+- Run extended hold test to verify long-term positional accuracy.
+- Bring up second axis once one-axis stability is confirmed.
 
 ## Research Notes
 - Martin fixture manuals describe two motion strategies:
@@ -149,10 +137,8 @@ For MVP, homing and runtime fault handling should be based on `UART StallGuard`,
 - Treat a runtime test as incomplete unless the OpenCV trace is available when optical proof is expected.
 
 ## Recommended Order From Here
-1. Build the mixed-motion DMX scenario and wire it to consume the continuously running video observer output.
-2. Remove visible one-axis DMX jitter with filtering, deadband, and/or a better internal motion profile.
-3. Re-prove one-axis smooth motion optically with both the mixed-motion scenario and the existing smooth-ramp check.
-4. Revisit the exact `~2 s` traverse target only after the motion quality is acceptable.
-5. Add the second axis and repeat functional runtime validation under load.
-6. Extend the optical ramp workflow to score both axes together.
-7. Add soak and fault-handling checks before revisiting external `DIAG`.
+1. Investigate Jitter cause on static DMX values and fix that first!
+2. Run extended hold test to verify long-term positional accuracy with count-limited PIO.
+3. Add the second axis and repeat functional runtime validation under load.
+4. Extend optical validation to score both axes together.
+5. Add soak and fault-handling checks before revisiting external `DIAG`.

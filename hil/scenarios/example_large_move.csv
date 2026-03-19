@@ -1,8 +1,0 @@
-offset_s,channel,target,fade_s,ramp_s,command_id,scenario
-0.0,3,28,0,0,setup_run_current,example_large_move
-0.0,4,12,0,0,setup_hold_current,example_large_move
-0.0,5,180,0,0,setup_speed,example_large_move
-0.0,6,180,0,0,setup_accel,example_large_move
-0.0,7,255,0,0,enable_axis,example_large_move
-1.0,1,255,0,0,move_high_msb,example_large_move
-1.0,2,255,0,0,move_high_lsb,example_large_move

@@ -1,7 +1,0 @@
-offset_s,channel,target,fade_s,ramp_s,command_id,scenario
-0.0,1,128,0.0,0.0,center_msb_init,disabled_idle_hold
-0.0,2,0,0.0,0.0,center_lsb_init,disabled_idle_hold
-0.0,7,64,0.0,0.0,disable_init,disabled_idle_hold
-0.1,1,128,12.0,0.0,center_msb_hold,disabled_idle_hold
-0.1,2,0,12.0,0.0,center_lsb_hold,disabled_idle_hold
-0.1,7,64,12.0,0.0,disable_hold,disabled_idle_hold

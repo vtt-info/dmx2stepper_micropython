@@ -1,7 +1,0 @@
-offset_s,channel,target,fade_s,ramp_s,command_id,scenario
-0.0,1,199,0.0,0.0,target_msb_init,fixed_target_hold
-0.0,2,255,0.0,0.0,target_lsb_init,fixed_target_hold
-0.0,7,255,0.0,0.0,enable_init,fixed_target_hold
-0.1,1,199,12.0,0.0,target_msb_hold,fixed_target_hold
-0.1,2,255,12.0,0.0,target_lsb_hold,fixed_target_hold
-0.1,7,255,12.0,0.0,enable_hold,fixed_target_hold

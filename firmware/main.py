@@ -286,13 +286,19 @@ class ChunkedPositionController:
         self.acceleration_steps_s2 = float(max(config.RUNTIME_MIN_ACCEL_STEPS_S2, int(snapshot["acceleration_steps_s2"])))
         self.enabled = bool(snapshot["enabled"])
         if self.enabled:
-            self.target_position_steps = int(
+            new_target = int(
                 map_u16_to_steps_with_margin(
                     snapshot["target_u16"],
                     self.span_steps,
                     config.RUNTIME_SOFT_END_MARGIN_STEPS,
                 )
             )
+            at_target = (int(self.current_position_steps) == int(self.target_position_steps)
+                         and abs(self.current_speed_hz) < 1.0)
+            if at_target and abs(new_target - self.current_position_steps) <= int(config.RUNTIME_POSITION_DEADBAND_STEPS):
+                pass
+            else:
+                self.target_position_steps = new_target
         else:
             self.hold_position()
 
@@ -679,6 +685,9 @@ def dmx_worker(shared):
     dmx = DMXReceiver(pin_num=config.DMX_PIN, sm_id=config.DMX_SM_ID)
     required_bytes = int(config.DMX_START_CHANNEL) + int(config.DMX_CHANNEL_COUNT)
     dmx.start()
+    last_confirmed_u16 = int(config.RUNTIME_DEFAULT_TARGET_U16)
+    pending_u16 = last_confirmed_u16
+    confirm_count = 0
     while True:
         frame_received = dmx.read_frame()
         if not frame_received:
@@ -690,6 +699,23 @@ def dmx_worker(shared):
         channels = dmx.get_channels(config.DMX_START_CHANNEL, config.DMX_CHANNEL_COUNT)
         if int(channels[7]) == 255:
             machine.reset()
+        new_u16 = (int(channels[0]) << 8) | int(channels[1])
+        delta = abs(new_u16 - last_confirmed_u16)
+        if delta > int(config.DMX_FRAME_IMMEDIATE_DELTA_LIMIT):
+            last_confirmed_u16 = new_u16
+            confirm_count = 0
+        elif delta > 0:
+            if new_u16 == pending_u16:
+                confirm_count += 1
+            else:
+                pending_u16 = new_u16
+                confirm_count = 1
+            if confirm_count >= int(config.DMX_FRAME_CONFIRM_COUNT):
+                last_confirmed_u16 = new_u16
+                confirm_count = 0
+            else:
+                channels[0] = last_confirmed_u16 >> 8
+                channels[1] = last_confirmed_u16 & 0xFF
         shared.update_from_channels(
             channels,
             dmx.get_frame_count(),

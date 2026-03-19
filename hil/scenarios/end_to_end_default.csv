@@ -1,8 +1,0 @@
-offset_s,channel,target,fade_s,ramp_s,command_id,scenario
-0.0,1,128,0.0,0.0,start_center_msb,end_to_end_default
-0.0,2,0,0.0,0.0,start_center_lsb,end_to_end_default
-0.0,7,255,0.0,0.0,enable_axis,end_to_end_default
-1.0,1,0,0.0,0.0,move_low_msb,end_to_end_default
-1.0,2,0,0.0,0.0,move_low_lsb,end_to_end_default
-5.0,1,255,0.0,0.0,move_high_msb,end_to_end_default
-5.0,2,255,0.0,0.0,move_high_lsb,end_to_end_default
