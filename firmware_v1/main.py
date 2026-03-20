@@ -25,6 +25,25 @@ def write_json(path, payload):
         handle.write(json.dumps(payload))
 
 
+def map_dmx_parameter(value, low, high, default):
+    value = clamp(value, 0, 255)
+    if value < int(config.DMX_PARAMETER_ACTIVE_MIN):
+        return int(default)
+
+    low = int(low)
+    high = int(high)
+    active_span = 255 - int(config.DMX_PARAMETER_ACTIVE_MIN)
+    scaled = value - int(config.DMX_PARAMETER_ACTIVE_MIN)
+    return low + ((high - low) * scaled + (active_span // 2)) // active_span
+
+
+def map_dmx_enable(value):
+    value = clamp(value, 0, 255)
+    if value < int(config.DMX_PARAMETER_ACTIVE_MIN):
+        return bool(config.RUNTIME_DEFAULT_ENABLED)
+    return value >= int(config.ENABLE_THRESHOLD)
+
+
 def map_u16_to_steps(value, span_steps):
     value = clamp(value, 0, 65535)
     span_steps = max(1, int(span_steps))
@@ -123,21 +142,122 @@ class SharedDMXState:
 
     def __init__(self):
         self._lock = _thread.allocate_lock()
-        self.target_u16 = int(config.DEFAULT_TARGET_U16)
+        self.target_u16 = int(config.RUNTIME_DEFAULT_TARGET_U16)
+        self.run_current = int(config.DEFAULT_RUN_CURRENT)
+        self.hold_current = int(config.DEFAULT_HOLD_CURRENT)
+        self.max_speed_hz = int(config.RUNTIME_DEFAULT_MAX_SPEED_HZ)
+        self.acceleration_steps_s2 = int(config.RUNTIME_DEFAULT_ACCEL_STEPS_S2)
+        self.enabled = bool(config.RUNTIME_DEFAULT_ENABLED)
         self.frame_count = 0
+        self.last_frame_ms = 0
+        self.start_code_errors = 0
+        self.last_bytes_received = 0
+        self.frame_complete = False
+        self.short_frame_count = 0
+        self.complete_frame_count = 0
+        self.last_complete_frame_ms = 0
+        self.last_alignment_offset = 0
+        self.last_candidate_count = 0
+        self.last_candidate_score = 0
+        self.rejected_frame_count = 0
+        self.pending_frame_count = 0
+        self._pending_channels = None
+        self.last_channels = [0] * int(config.DMX_CHANNEL_COUNT)
 
-    def update_from_channels(self, channels, frame_count):
+    def update_from_channels(self, channels, frame_count, last_frame_ms, start_code_errors, last_bytes_received=0):
         self._lock.acquire()
-        self.target_u16 = (int(channels[0]) << 8) | int(channels[1])
-        self.frame_count = int(frame_count)
-        self._lock.release()
+        try:
+            self.last_channels = list(channels)
+            self.target_u16 = (int(channels[0]) << 8) | int(channels[1])
+            if bool(config.RUNTIME_POSITION_ONLY_MODE):
+                self.run_current = int(config.DEFAULT_RUN_CURRENT)
+                self.hold_current = int(config.DEFAULT_HOLD_CURRENT)
+                self.max_speed_hz = int(config.RUNTIME_DEFAULT_MAX_SPEED_HZ)
+                self.acceleration_steps_s2 = int(config.RUNTIME_DEFAULT_ACCEL_STEPS_S2)
+                self.enabled = bool(config.RUNTIME_DEFAULT_ENABLED)
+            else:
+                self.run_current = map_dmx_parameter(
+                    channels[2],
+                    config.RUNTIME_MIN_RUN_CURRENT,
+                    config.RUNTIME_MAX_RUN_CURRENT,
+                    config.DEFAULT_RUN_CURRENT,
+                )
+                self.hold_current = map_dmx_parameter(
+                    channels[3],
+                    config.RUNTIME_MIN_HOLD_CURRENT,
+                    config.RUNTIME_MAX_HOLD_CURRENT,
+                    config.DEFAULT_HOLD_CURRENT,
+                )
+                self.max_speed_hz = map_dmx_parameter(
+                    channels[4],
+                    config.RUNTIME_MIN_SPEED_HZ,
+                    config.RUNTIME_MAX_SPEED_HZ,
+                    config.RUNTIME_DEFAULT_MAX_SPEED_HZ,
+                )
+                self.acceleration_steps_s2 = map_dmx_parameter(
+                    channels[5],
+                    config.RUNTIME_MIN_ACCEL_STEPS_S2,
+                    config.RUNTIME_MAX_ACCEL_STEPS_S2,
+                    config.RUNTIME_DEFAULT_ACCEL_STEPS_S2,
+                )
+                self.enabled = map_dmx_enable(channels[6])
+            self.frame_count = int(frame_count)
+            self.last_frame_ms = int(last_frame_ms)
+            self.start_code_errors = int(start_code_errors)
+            self.last_bytes_received = int(last_bytes_received)
+            self.frame_complete = True
+            self.last_complete_frame_ms = int(last_frame_ms)
+            self.complete_frame_count = int(frame_count)
+            self.last_alignment_offset = 0
+            self.last_candidate_count = 1
+            self.last_candidate_score = 0
+            self.rejected_frame_count = 0
+            self._pending_channels = None
+            self.pending_frame_count = 0
+        finally:
+            self._lock.release()
 
-    def snapshot(self):
+    def snapshot(self, now_ms):
         self._lock.acquire()
-        val = self.target_u16
-        count = self.frame_count
-        self._lock.release()
-        return val, count
+        try:
+            age_ms = None
+            signal_present = False
+            if self.last_frame_ms:
+                age_ms = time.ticks_diff(int(now_ms), int(self.last_frame_ms))
+                signal_present = age_ms <= int(config.DMX_LOSS_TIMEOUT_MS)
+            complete_age_ms = None
+            control_signal_present = False
+            if self.last_complete_frame_ms:
+                complete_age_ms = time.ticks_diff(int(now_ms), int(self.last_complete_frame_ms))
+                control_signal_present = complete_age_ms <= int(config.DMX_LOSS_TIMEOUT_MS)
+            return {
+                "target_u16": int(self.target_u16),
+                "run_current": int(self.run_current),
+                "hold_current": int(self.hold_current),
+                "max_speed_hz": int(self.max_speed_hz),
+                "acceleration_steps_s2": int(self.acceleration_steps_s2),
+                "enabled": bool(self.enabled),
+                "frame_count": int(self.frame_count),
+                "last_frame_ms": int(self.last_frame_ms),
+                "age_ms": age_ms,
+                "signal_present": bool(signal_present),
+                "last_complete_frame_ms": int(self.last_complete_frame_ms),
+                "complete_age_ms": complete_age_ms,
+                "control_signal_present": bool(control_signal_present),
+                "start_code_errors": int(self.start_code_errors),
+                "last_bytes_received": int(self.last_bytes_received),
+                "frame_complete": bool(self.frame_complete),
+                "short_frame_count": int(self.short_frame_count),
+                "complete_frame_count": int(self.complete_frame_count),
+                "last_alignment_offset": int(self.last_alignment_offset),
+                "last_candidate_count": int(self.last_candidate_count),
+                "last_candidate_score": int(self.last_candidate_score),
+                "rejected_frame_count": int(self.rejected_frame_count),
+                "pending_frame_count": int(self.pending_frame_count),
+                "last_channels": list(self.last_channels),
+            }
+        finally:
+            self._lock.release()
 
 
 class ChunkedPositionController:
@@ -149,12 +269,11 @@ class ChunkedPositionController:
         self.current_position_steps = self.span_steps // 2
         self.target_position_steps = self.current_position_steps
         self.current_speed_hz = 0.0
-        self.max_speed_hz = float(config.MOTOR_MAX_SPEED_HZ)
-        self.acceleration_steps_s2 = float(config.MOTOR_ACCELERATION_S2)
+        self.max_speed_hz = float(config.RUNTIME_DEFAULT_MAX_SPEED_HZ)
+        self.acceleration_steps_s2 = float(config.RUNTIME_DEFAULT_ACCEL_STEPS_S2)
         self.enabled = True
         self._last_update_ms = time.ticks_ms()
         self._step_accumulator = 0.0
-        self._last_target_u16 = config.DEFAULT_TARGET_U16
 
     def hold_position(self):
         self.target_position_steps = int(self.current_position_steps)
@@ -162,20 +281,26 @@ class ChunkedPositionController:
         self._step_accumulator = 0.0
         self._last_update_ms = time.ticks_ms()
 
-    def apply_snapshot(self, snapshot_target_u16):
-        new_target = int(
-            map_u16_to_steps_with_margin(
-                snapshot_target_u16,
-                self.span_steps,
-                config.RUNTIME_SOFT_END_MARGIN_STEPS,
+    def apply_snapshot(self, snapshot):
+        self.max_speed_hz = float(max(config.RUNTIME_MIN_SPEED_HZ, int(snapshot["max_speed_hz"])))
+        self.acceleration_steps_s2 = float(max(config.RUNTIME_MIN_ACCEL_STEPS_S2, int(snapshot["acceleration_steps_s2"])))
+        self.enabled = bool(snapshot["enabled"])
+        if self.enabled:
+            new_target = int(
+                map_u16_to_steps_with_margin(
+                    snapshot["target_u16"],
+                    self.span_steps,
+                    config.RUNTIME_SOFT_END_MARGIN_STEPS,
+                )
             )
-        )
-        at_target = (int(self.current_position_steps) == int(self.target_position_steps)
-                     and abs(self.current_speed_hz) < 1.0)
-        if at_target and abs(new_target - self.current_position_steps) <= int(config.RUNTIME_POSITION_DEADBAND_STEPS):
-            pass
+            at_target = (int(self.current_position_steps) == int(self.target_position_steps)
+                         and abs(self.current_speed_hz) < 1.0)
+            if at_target and abs(new_target - self.current_position_steps) <= int(config.RUNTIME_POSITION_DEADBAND_STEPS):
+                pass
+            else:
+                self.target_position_steps = new_target
         else:
-            self.target_position_steps = new_target
+            self.hold_position()
 
     def _approach(self, current, target, delta):
         if current < target:
@@ -558,28 +683,64 @@ def run_homing(driver, result):
 
 def dmx_worker(shared):
     dmx = DMXReceiver(pin_num=config.DMX_PIN, sm_id=config.DMX_SM_ID)
+    required_bytes = int(config.DMX_START_CHANNEL) + int(config.DMX_CHANNEL_COUNT)
     dmx.start()
+    last_confirmed_u16 = int(config.RUNTIME_DEFAULT_TARGET_U16)
+    pending_u16 = last_confirmed_u16
+    confirm_count = 0
     while True:
         frame_received = dmx.read_frame()
         if not frame_received:
             continue
         if dmx.last_start_code != 0x00:
             continue
-        channels = dmx.get_channels(config.DMX_START_CHANNEL, 8)
+        if int(dmx.last_bytes_received) < int(required_bytes):
+            continue
+        channels = dmx.get_channels(config.DMX_START_CHANNEL, config.DMX_CHANNEL_COUNT)
         if int(channels[7]) == 255:
             machine.reset()
-        shared.update_from_channels(channels, dmx.get_frame_count())
+        new_u16 = (int(channels[0]) << 8) | int(channels[1])
+        delta = abs(new_u16 - last_confirmed_u16)
+        if delta > int(config.DMX_FRAME_IMMEDIATE_DELTA_LIMIT):
+            last_confirmed_u16 = new_u16
+            confirm_count = 0
+        elif delta > 0:
+            if new_u16 == pending_u16:
+                confirm_count += 1
+            else:
+                pending_u16 = new_u16
+                confirm_count = 1
+            if confirm_count >= int(config.DMX_FRAME_CONFIRM_COUNT):
+                last_confirmed_u16 = new_u16
+                confirm_count = 0
+            else:
+                channels[0] = last_confirmed_u16 >> 8
+                channels[1] = last_confirmed_u16 & 0xFF
+        shared.update_from_channels(
+            channels,
+            dmx.get_frame_count(),
+            time.ticks_ms(),
+            dmx.start_code_errors,
+            dmx.last_bytes_received,
+        )
 
 
 def build_runtime_status(
     result,
     homing_trial,
     controller,
-    target_u16,
+    snapshot,
+    moved,
+    requested_enabled,
+    applied_enabled,
+    applied_target_u16,
     stable_target_since_ms,
     idle_since_ms,
     total_steps_emitted,
+    steps_emitted_while_disabled,
+    steps_emitted_while_stable_target,
     last_step_ms,
+    recent_motion_events,
 ):
     return {
         "runtime_active": True,
@@ -598,11 +759,38 @@ def build_runtime_status(
         "current_position_steps": int(controller.current_position_steps),
         "target_position_steps": int(controller.target_position_steps),
         "current_speed_hz": round(float(controller.current_speed_hz), 3),
-        "target_u16": int(target_u16),
+        "enabled": bool(requested_enabled),
+        "applied_enabled": bool(applied_enabled),
+        "applied_target_u16": int(applied_target_u16),
+        "applied_target_steps": int(controller.target_position_steps),
         "stable_target_since_ms": stable_target_since_ms,
         "idle_since_ms": idle_since_ms,
+        "signal_present": bool(snapshot["signal_present"]),
+        "control_signal_present": bool(snapshot["control_signal_present"]),
+        "dmx_frame_count": int(snapshot["frame_count"]),
+        "dmx_complete_frame_count": int(snapshot["complete_frame_count"]),
+        "dmx_last_frame_age_ms": snapshot["age_ms"],
+        "dmx_last_complete_frame_age_ms": snapshot["complete_age_ms"],
+        "dmx_start_code_errors": int(snapshot["start_code_errors"]),
+        "dmx_last_bytes_received": int(snapshot["last_bytes_received"]),
+        "dmx_short_frame_count": int(snapshot["short_frame_count"]),
+        "dmx_frame_complete": bool(snapshot["frame_complete"]),
+        "dmx_last_alignment_offset": int(snapshot["last_alignment_offset"]),
+        "dmx_last_candidate_count": int(snapshot["last_candidate_count"]),
+        "dmx_last_candidate_score": int(snapshot["last_candidate_score"]),
+        "dmx_rejected_frame_count": int(snapshot["rejected_frame_count"]),
+        "dmx_pending_frame_count": int(snapshot["pending_frame_count"]),
+        "last_channels": list(snapshot["last_channels"]),
+        "run_current": int(snapshot["run_current"]),
+        "hold_current": int(snapshot["hold_current"]),
+        "max_speed_hz": int(snapshot["max_speed_hz"]),
+        "acceleration_steps_s2": int(snapshot["acceleration_steps_s2"]),
+        "moved_last_update": int(moved),
         "total_steps_emitted": int(total_steps_emitted),
+        "steps_emitted_while_disabled": int(steps_emitted_while_disabled),
+        "steps_emitted_while_stable_target": int(steps_emitted_while_stable_target),
         "last_step_ms": last_step_ms,
+        "recent_motion_events": list(recent_motion_events),
     }
 
 
@@ -690,11 +878,20 @@ def main():
         _thread.start_new_thread(dmx_worker, (shared,))
 
         last_status_ms = -config.STATUS_INTERVAL_MS
+        last_print_ms = -config.PRINT_INTERVAL_MS
+        driver_enabled = True
+        last_currents = None
         runtime_start_ms = time.ticks_ms()
+        last_target_signature = None
+        last_state_signature = None
         stable_target_since_ms = None
         idle_since_ms = None
         total_steps_emitted = 0
+        steps_emitted_while_disabled = 0
+        steps_emitted_while_stable_target = 0
         last_step_ms = None
+        recent_motion_events = []
+        last_status_payload = None
 
         debug_log(
             "[runtime] selected_trial={} step=GP{} dir=GP{} home_dir={} travel_steps={}".format(
@@ -708,52 +905,216 @@ def main():
 
         while True:
             now_ms = time.ticks_ms()
-            target_u16, frame_count = shared.snapshot()
-            controller.apply_snapshot(target_u16)
+            snapshot = shared.snapshot(now_ms)
+            controller.apply_snapshot(snapshot)
 
-            if target_u16 != controller._last_target_u16:
+            desired_enabled = bool(snapshot["enabled"])
+            if desired_enabled != driver_enabled:
+                if driver.set_driver_enabled_via_uart(desired_enabled, fallback_toff=config.DRIVER_ENABLE_TOFF):
+                    driver_enabled = desired_enabled
+                    if not desired_enabled:
+                        controller.hold_position()
+                    append_recent_event(
+                        recent_motion_events,
+                        {
+                            "t_ms": int(now_ms),
+                            "event": "driver_enable",
+                            "requested_enabled": bool(desired_enabled),
+                            "applied_enabled": bool(driver_enabled),
+                            "frame_count": int(snapshot["frame_count"]),
+                            "dmx_last_bytes_received": int(snapshot["last_bytes_received"]),
+                            "dmx_frame_complete": bool(snapshot["frame_complete"]),
+                            "dmx_last_alignment_offset": int(snapshot["last_alignment_offset"]),
+                            "dmx_last_candidate_score": int(snapshot["last_candidate_score"]),
+                        },
+                    )
+                else:
+                    append_recent_event(
+                        recent_motion_events,
+                        {
+                            "t_ms": int(now_ms),
+                            "event": "driver_enable_failed",
+                            "requested_enabled": bool(desired_enabled),
+                            "applied_enabled": bool(driver_enabled),
+                            "frame_count": int(snapshot["frame_count"]),
+                            "dmx_last_bytes_received": int(snapshot["last_bytes_received"]),
+                            "dmx_frame_complete": bool(snapshot["frame_complete"]),
+                            "dmx_last_alignment_offset": int(snapshot["last_alignment_offset"]),
+                            "dmx_last_candidate_score": int(snapshot["last_candidate_score"]),
+                        },
+                    )
+
+            applied_run_current = int(snapshot["run_current"])
+            applied_hold_current = int(snapshot["hold_current"])
+            if not snapshot["signal_present"]:
+                applied_run_current = int(snapshot["hold_current"])
+                applied_hold_current = int(snapshot["hold_current"])
+
+            current_signature = (applied_hold_current, applied_run_current)
+            if current_signature != last_currents:
+                driver.set_run_hold_current(
+                    run_current=applied_run_current,
+                    hold_current=applied_hold_current,
+                    hold_delay=config.CURRENT_HOLD_DELAY,
+                )
+                last_currents = current_signature
+
+            target_signature = (
+                bool(desired_enabled),
+                int(snapshot["target_u16"]),
+                int(controller.target_position_steps),
+            )
+            if target_signature != last_target_signature:
                 stable_target_since_ms = int(now_ms)
-                controller._last_target_u16 = target_u16
+                last_target_signature = target_signature
 
+            idle_before_update = (
+                bool(desired_enabled)
+                and int(controller.current_position_steps) == int(controller.target_position_steps)
+                and abs(float(controller.current_speed_hz)) < 1.0
+            )
             moved = controller.update()
             if moved > 0:
                 total_steps_emitted += int(moved)
                 last_step_ms = int(now_ms)
+                if not desired_enabled:
+                    steps_emitted_while_disabled += int(moved)
+                if idle_before_update:
+                    steps_emitted_while_stable_target += int(moved)
+                append_recent_event(
+                    recent_motion_events,
+                    {
+                        "t_ms": int(now_ms),
+                        "event": "step_chunk",
+                        "moved": int(moved),
+                        "requested_enabled": bool(desired_enabled),
+                        "applied_enabled": bool(driver_enabled),
+                        "target_u16": int(snapshot["target_u16"]),
+                        "target_steps": int(controller.target_position_steps),
+                        "current_position_steps": int(controller.current_position_steps),
+                        "current_speed_hz": round(float(controller.current_speed_hz), 3),
+                        "dmx_frame_count": int(snapshot["frame_count"]),
+                        "dmx_last_bytes_received": int(snapshot["last_bytes_received"]),
+                        "dmx_frame_complete": bool(snapshot["frame_complete"]),
+                        "dmx_last_alignment_offset": int(snapshot["last_alignment_offset"]),
+                        "dmx_last_candidate_score": int(snapshot["last_candidate_score"]),
+                    },
+                )
 
-            at_target_after = (
-                int(controller.current_position_steps) == int(controller.target_position_steps)
+            idle_after_update = (
+                bool(desired_enabled)
+                and int(controller.current_position_steps) == int(controller.target_position_steps)
                 and abs(float(controller.current_speed_hz)) < 1.0
             )
-            if at_target_after:
+            if idle_after_update:
                 if idle_since_ms is None:
                     idle_since_ms = int(now_ms)
             else:
                 idle_since_ms = None
+
+            state_signature = (
+                bool(desired_enabled),
+                bool(driver_enabled),
+                bool(snapshot["signal_present"]),
+                bool(snapshot["frame_complete"]),
+                int(snapshot["target_u16"]),
+                int(snapshot["last_bytes_received"]),
+            )
+            if state_signature != last_state_signature:
+                append_recent_event(
+                    recent_motion_events,
+                    {
+                        "t_ms": int(now_ms),
+                        "event": "state_change",
+                        "requested_enabled": bool(desired_enabled),
+                        "applied_enabled": bool(driver_enabled),
+                        "signal_present": bool(snapshot["signal_present"]),
+                        "control_signal_present": bool(snapshot["control_signal_present"]),
+                        "target_u16": int(snapshot["target_u16"]),
+                        "target_steps": int(controller.target_position_steps),
+                        "current_position_steps": int(controller.current_position_steps),
+                        "current_speed_hz": round(float(controller.current_speed_hz), 3),
+                        "dmx_last_bytes_received": int(snapshot["last_bytes_received"]),
+                        "dmx_frame_complete": bool(snapshot["frame_complete"]),
+                        "dmx_short_frame_count": int(snapshot["short_frame_count"]),
+                        "dmx_last_alignment_offset": int(snapshot["last_alignment_offset"]),
+                        "dmx_last_candidate_score": int(snapshot["last_candidate_score"]),
+                        "dmx_rejected_frame_count": int(snapshot["rejected_frame_count"]),
+                    },
+                )
+                last_state_signature = state_signature
 
             if (
                 bool(config.RUNTIME_STATUS_STREAM_ENABLED)
                 and int(config.STATUS_INTERVAL_MS) > 0
                 and time.ticks_diff(now_ms, last_status_ms) >= config.STATUS_INTERVAL_MS
             ):
-                write_json(
-                    config.STATUS_FILE,
-                    build_runtime_status(
-                        result,
-                        homing_trial,
-                        controller,
-                        target_u16,
-                        stable_target_since_ms,
-                        idle_since_ms,
-                        total_steps_emitted,
-                        last_step_ms,
-                    ),
+                status_payload = build_runtime_status(
+                    result,
+                    homing_trial,
+                    controller,
+                    snapshot,
+                    moved,
+                    desired_enabled,
+                    driver_enabled,
+                    snapshot["target_u16"],
+                    stable_target_since_ms,
+                    idle_since_ms,
+                    total_steps_emitted,
+                    steps_emitted_while_disabled,
+                    steps_emitted_while_stable_target,
+                    last_step_ms,
+                    recent_motion_events,
                 )
+                write_json(config.STATUS_FILE, status_payload)
+                last_status_payload = status_payload
                 last_status_ms = now_ms
+
+            if time.ticks_diff(now_ms, last_print_ms) >= config.PRINT_INTERVAL_MS:
+                debug_log(
+                    "[runtime] frames={} signal={} en={}/{} pos={}/{} speed={:.1f} moved={} total_steps={} short_frames={} align_off={} cand_score={} rej={}".format(
+                        snapshot["frame_count"],
+                        int(snapshot["signal_present"]),
+                        int(snapshot["enabled"]),
+                        int(driver_enabled),
+                        controller.current_position_steps,
+                        controller.target_position_steps,
+                        controller.current_speed_hz,
+                        moved,
+                        total_steps_emitted,
+                        snapshot["short_frame_count"],
+                        snapshot["last_alignment_offset"],
+                        snapshot["last_candidate_score"],
+                        snapshot["rejected_frame_count"],
+                    )
+                )
+                last_print_ms = now_ms
 
             if (
                 int(config.RUNTIME_EXIT_AFTER_MS) > 0
                 and time.ticks_diff(now_ms, runtime_start_ms) >= int(config.RUNTIME_EXIT_AFTER_MS)
             ):
+                if last_status_payload is None or time.ticks_diff(now_ms, last_status_ms) > 0:
+                    write_json(
+                        config.STATUS_FILE,
+                        build_runtime_status(
+                            result,
+                            homing_trial,
+                            controller,
+                            snapshot,
+                            moved,
+                            desired_enabled,
+                            driver_enabled,
+                            snapshot["target_u16"],
+                            stable_target_since_ms,
+                            idle_since_ms,
+                            total_steps_emitted,
+                            steps_emitted_while_disabled,
+                            steps_emitted_while_stable_target,
+                            last_step_ms,
+                            recent_motion_events,
+                        ),
+                    )
                 debug_log("[runtime] exiting after configured runtime window")
                 return
 
