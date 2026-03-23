@@ -306,7 +306,7 @@ def build_axis(step_pin, dir_pin, axis_slot):
     )
 
 
-def seek_endstop_uart(driver, axis, direction, speed_hz, label):
+def seek_endstop_uart(driver, axis, direction, speed_hz, label, preset_uart_threshold=None):
     max_home_steps = scaled_home_steps(config.HOME_MAX_STEPS)
     min_stall_steps = scaled_home_steps(config.HOME_MIN_STALL_STEPS)
     timeout_ms = int((max_home_steps * 1000) / max(1.0, float(speed_hz))) + config.HOME_TIMEOUT_MARGIN_MS
@@ -356,7 +356,14 @@ def seek_endstop_uart(driver, axis, direction, speed_hz, label):
         status["sgthrs"] = sgthrs
         debug_log("[seek:{}] auto-raised SGTHRS to 1 for {} mode".format(label, stall_mode))
 
-    startup_done = [False]
+    # Allow preset threshold from a previous pass (for two-pass homing)
+    if preset_uart_threshold is not None:
+        status["uart_threshold"] = int(preset_uart_threshold)
+        status["startup_sg_samples"] = int(config.HOME_STARTUP_SG_SAMPLES)
+        startup_done = [True]
+        debug_log("[seek:{}] using preset uart_threshold={}".format(label, status["uart_threshold"]))
+    else:
+        startup_done = [False]
 
     def stop_fn(steps, elapsed_ms):
         nonlocal last_status_ms, low_sg_count
@@ -552,6 +559,38 @@ def run_centering_trial(driver, step_pin, dir_pin, axis_slot, home_direction, sp
         if not first_end["success"]:
             status["stop_reason"] = "first_end_" + first_end["stop_reason"]
             return status
+
+        # Two-pass homing: slow touch-off for precision
+        two_pass = bool(getattr(config, "HOME_TWO_PASS", False))
+        if two_pass:
+            touchoff_retract = scaled_home_steps(int(getattr(config, "HOME_TOUCHOFF_RETRACT_STEPS", 64)))
+            touchoff_speed_base = int(getattr(config, "HOME_TOUCHOFF_SPEED_1_8_HZ", 50))
+            touchoff_speed = int(float(touchoff_speed_base) * stallguard_adjustment(config.MICROSTEP_MODE))
+            touchoff_speed = max(touchoff_speed, 100)  # minimum 100 Hz
+
+            # Small retract
+            if touchoff_retract > 0:
+                retracted = int(axis.move_fixed_steps_blocking(
+                    touchoff_retract, -home_direction, home_retract_speed_hz,
+                    poll_ms=config.HOME_POLL_MS,
+                ))
+                status["touchoff_retract_steps"] = retracted
+                debug_log("[trial] touchoff retract steps={}".format(retracted))
+                time.sleep_ms(config.HOME_SETTLE_MS)
+
+            # Slow approach — reuse threshold from fast pass
+            first_threshold = first_end.get("uart_threshold")
+            touchoff_end = seek_endstop_uart(
+                driver, axis, home_direction, touchoff_speed, "touchoff",
+                preset_uart_threshold=first_threshold,
+            )
+            status["touchoff_end"] = touchoff_end
+            if touchoff_end["success"]:
+                debug_log("[trial] touchoff success at steps={} speed={}Hz".format(
+                    touchoff_end["search_steps"], touchoff_speed))
+            else:
+                debug_log("[trial] touchoff failed: {}".format(touchoff_end["stop_reason"]))
+                # Fall through — use first_end position instead
 
         release_target_steps = int(home_release_steps)
         if release_target_steps > 0:
