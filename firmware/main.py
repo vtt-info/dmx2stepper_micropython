@@ -310,11 +310,16 @@ def seek_endstop_uart(driver, axis, direction, speed_hz, label):
     max_home_steps = scaled_home_steps(config.HOME_MAX_STEPS)
     min_stall_steps = scaled_home_steps(config.HOME_MIN_STALL_STEPS)
     timeout_ms = int((max_home_steps * 1000) / max(1.0, float(speed_hz))) + config.HOME_TIMEOUT_MARGIN_MS
+    stall_mode = str(getattr(config, "HOME_STALL_MODE", "uart"))
+    diag_poll_ms = int(getattr(config, "HOME_DIAG_POLL_MS", 1))
+    diag_window_size = int(getattr(config, "HOME_DIAG_WINDOW_SIZE", 10))
+    diag_window_threshold = int(getattr(config, "HOME_DIAG_WINDOW_THRESHOLD", 5))
     status = {
         "label": label,
         "direction": int(direction),
         "speed_hz": int(speed_hz),
         "max_home_steps": int(max_home_steps),
+        "stall_mode": stall_mode,
         "search_steps": 0,
         "search_elapsed_ms": 0,
         "last_sg": None,
@@ -336,22 +341,48 @@ def seek_endstop_uart(driver, axis, direction, speed_hz, label):
     driver.set_stallguard_threshold(sgthrs)
     status["sgthrs"] = sgthrs
 
-    diag_stall_steps = [0]
+    diag_total = [0]
     diag_first_trigger_steps = [None]
+    diag_window = []  # sliding window of recent DIAG readings (1=triggered, 0=not)
+    diag_window_max_density = [0]
     status["diag_triggers"] = 0
     status["diag_first_trigger_steps"] = None
+    status["diag_window_max_density"] = 0
+
+    # For hybrid/diag modes: need SGTHRS > 0 to generate DIAG output
+    if stall_mode in ("diag_density", "hybrid") and sgthrs == 0:
+        sgthrs = 1
+        driver.set_stallguard_threshold(sgthrs)
+        status["sgthrs"] = sgthrs
+        debug_log("[seek:{}] auto-raised SGTHRS to 1 for {} mode".format(label, stall_mode))
+
+    startup_done = [False]
 
     def stop_fn(steps, elapsed_ms):
         nonlocal last_status_ms, low_sg_count
 
         diag = driver.diag_triggered()
-        if diag and steps >= min_stall_steps:
-            diag_stall_steps[0] += 1
-            if diag_first_trigger_steps[0] is None:
-                diag_first_trigger_steps[0] = int(steps)
-                status["diag_first_trigger_steps"] = int(steps)
-            status["diag_triggers"] = int(diag_stall_steps[0])
 
+        # Track DIAG in sliding window
+        if steps >= min_stall_steps:
+            diag_val = 1 if diag else 0
+            diag_window.append(diag_val)
+            if len(diag_window) > diag_window_size:
+                del diag_window[0]
+            if diag:
+                diag_total[0] += 1
+                if diag_first_trigger_steps[0] is None:
+                    diag_first_trigger_steps[0] = int(steps)
+                    status["diag_first_trigger_steps"] = int(steps)
+                status["diag_triggers"] = int(diag_total[0])
+            # Track max density seen
+            if len(diag_window) >= diag_window_size:
+                density = sum(diag_window)
+                if density > diag_window_max_density[0]:
+                    diag_window_max_density[0] = density
+                    status["diag_window_max_density"] = density
+
+        # Read UART SG — always needed for startup, and for uart/hybrid modes
         sg = driver.read_stallguard_result()
         if sg is not None:
             sg = int(sg)
@@ -366,28 +397,51 @@ def seek_endstop_uart(driver, axis, direction, speed_hz, label):
                 status["startup_sg_values"].append(sg)
                 if status["startup_sg_samples"] == config.HOME_STARTUP_SG_SAMPLES:
                     status["uart_threshold"] = int(derive_uart_threshold(status["startup_sg_values"]))
+                    startup_done[0] = True
                     debug_log(
-                        "[seek:{}] armed uart threshold {} from startup median {}".format(
+                        "[seek:{}] armed threshold {} from median {} (mode={})".format(
                             label,
                             status["uart_threshold"],
                             median_int(status["startup_sg_values"]),
+                            stall_mode,
                         )
                     )
-            elif steps >= min_stall_steps:
-                threshold = int(status["uart_threshold"])
-                if sg <= threshold:
-                    low_sg_count += 1
-                    if low_sg_count > status["low_sg_peak"]:
-                        status["low_sg_peak"] = int(low_sg_count)
-                else:
-                    low_sg_count = 0
 
-                if low_sg_count >= config.HOME_UART_CONFIRM_POLLS:
-                    return "uart_stall"
+        # Stall detection
+        if startup_done[0] and steps >= min_stall_steps:
+            if stall_mode == "diag_density":
+                # DIAG density: N triggers within sliding window of M polls
+                if len(diag_window) >= diag_window_size:
+                    if sum(diag_window) >= diag_window_threshold:
+                        return "diag_density_stall"
+
+            elif stall_mode == "hybrid":
+                # Hybrid: DIAG density arms, then UART confirms
+                diag_dense = (len(diag_window) >= diag_window_size
+                              and sum(diag_window) >= diag_window_threshold)
+                if diag_dense and sg is not None:
+                    threshold = int(status["uart_threshold"])
+                    if sg <= threshold:
+                        return "hybrid_stall"
+
+            else:
+                # Original UART-only mode
+                if sg is not None:
+                    threshold = int(status["uart_threshold"])
+                    if sg <= threshold:
+                        low_sg_count += 1
+                        if low_sg_count > status["low_sg_peak"]:
+                            status["low_sg_peak"] = int(low_sg_count)
+                    else:
+                        low_sg_count = 0
+
+                    if low_sg_count >= config.HOME_UART_CONFIRM_POLLS:
+                        return "uart_stall"
 
         if elapsed_ms - last_status_ms >= config.PRINT_INTERVAL_MS:
+            diag_dens = sum(diag_window) if len(diag_window) >= diag_window_size else -1
             debug_log(
-                "[seek:{}] elapsed={}ms steps={} sg={} low_hits={} thr={} diag={}".format(
+                "[seek:{}] elapsed={}ms steps={} sg={} low_hits={} thr={} diag={} dens={}/{}".format(
                     label,
                     elapsed_ms,
                     steps,
@@ -395,35 +449,43 @@ def seek_endstop_uart(driver, axis, direction, speed_hz, label):
                     low_sg_count,
                     status["uart_threshold"],
                     int(diag),
+                    diag_dens,
+                    diag_window_size,
                 )
             )
             last_status_ms = elapsed_ms
 
         return None
 
+    # Select polling interval based on mode
+    poll_ms = diag_poll_ms if stall_mode in ("diag_density", "hybrid") else config.HOME_POLL_MS
+
     search = axis.run_until(
         direction=direction,
         speed_hz=speed_hz,
         max_steps=max_home_steps,
         stop_fn=stop_fn,
-        poll_ms=config.HOME_POLL_MS,
+        poll_ms=poll_ms,
         timeout_ms=timeout_ms,
     )
 
     status["search_steps"] = int(search["steps"])
     status["search_elapsed_ms"] = int(search["elapsed_ms"])
     status["stop_reason"] = search["stop_reason"]
-    status["success"] = search["stop_reason"] == "uart_stall"
+    status["success"] = search["stop_reason"] in ("uart_stall", "diag_density_stall", "hybrid_stall")
 
     debug_log(
-        "[seek:{}] result success={} stop_reason={} steps={} elapsed={}ms diag_triggers={} diag_first_at={}".format(
+        "[seek:{}] result mode={} success={} stop={} steps={} elapsed={}ms diag_trig={} diag_first={} diag_max_dens={}/{}".format(
             label,
+            stall_mode,
             int(status["success"]),
             status["stop_reason"],
             status["search_steps"],
             status["search_elapsed_ms"],
             status["diag_triggers"],
             status["diag_first_trigger_steps"],
+            status["diag_window_max_density"],
+            diag_window_size,
         )
     )
     time.sleep_ms(config.HOME_SETTLE_MS)

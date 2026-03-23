@@ -58,7 +58,7 @@ RUNTIME_TRAVEL_STEPS = 20000
 RUNTIME_SOFT_END_MARGIN_STEPS = 1000
 HOME_MAX_STEPS = 4800
 HOME_MIN_TRAVEL_STEPS = 1000
-HOME_POLL_MS = 5
+HOME_POLL_MS = 1
 HOME_STARTUP_SG_SAMPLES = 12
 HOME_MIN_STALL_STEPS = 96
 HOME_UART_THRESHOLD_RATIO = 0.30
@@ -69,6 +69,16 @@ HOME_SETTLE_MS = 150
 HOME_TIMEOUT_MARGIN_MS = 1200
 HOME_COOLSTEP_THRESHOLD = 3200
 HOME_SGTHRS = 0
+
+# Stall detection mode: "uart", "diag_confirm", "hybrid"
+#   uart         = original UART-only SG polling (poll_ms=5)
+#   diag_confirm = DIAG pin with consecutive confirmation (poll_ms=1, fast)
+#   hybrid       = DIAG triggers immediate UART confirmation
+HOME_STALL_MODE = "uart"
+HOME_DIAG_CONFIRM_POLLS = 3   # consecutive DIAG=1 readings to confirm stall
+HOME_DIAG_POLL_MS = 1         # polling interval in DIAG modes
+HOME_DIAG_WINDOW_SIZE = 10    # sliding window size for DIAG density detection
+HOME_DIAG_WINDOW_THRESHOLD = 5  # triggers needed within window to confirm
 
 # Runtime motion limits
 DEFAULT_TARGET_U16 = 32768
